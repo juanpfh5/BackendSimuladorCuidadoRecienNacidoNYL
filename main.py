@@ -14,9 +14,9 @@ import pymysql
 
 load_dotenv()
 
-DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_USER = os.getenv("DB_USER", "root")
-DB_PASS = os.getenv("DB_PASS", "4815926")
+DB_HOST = os.getenv("DB_HOST", "simuladornyl-server.mysql.database.azure.com")
+DB_USER = os.getenv("DB_USER", "simulador")
+DB_PASS = os.getenv("DB_PASS", "Nayeli12")
 DB_NAME = os.getenv("DB_NAME", "simulador")
 DB_PORT = int(os.getenv("DB_PORT", "3306"))
 
