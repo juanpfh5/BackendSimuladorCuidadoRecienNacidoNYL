@@ -302,6 +302,22 @@ def actividades_dia(curp: str):
     finally:
         conn.close()
 
+
+@app.get("/actividades/reporte/{curp}")
+def actividades_todas(curp: str):
+    """Devuelve todas las actividades registradas para la `curp` indicada.
+    Ordenadas por `fecha_inicial` descendente (más recientes primero).
+    """
+    sql = "SELECT id, actividad, fecha_inicial, fecha_limite, completada, curp FROM actividades WHERE curp = %s ORDER BY fecha_inicial DESC"
+    conn = obtener_conexion_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, (curp,))
+            rows = cur.fetchall()
+            return {"actividades": rows}
+    finally:
+        conn.close()
+
 # Optional: mark activity completed
 class CompletarEntrada(BaseModel):
     id: int
@@ -319,3 +335,4 @@ def completar_actividad(payload: CompletarEntrada):
         return {"msg": "Actividad marcada como completada"}
     finally:
         conn.close()
+
