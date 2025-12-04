@@ -14,6 +14,9 @@ import pymysql
 
 load_dotenv()
 
+# Aplicación FastAPI
+app = FastAPI()
+
 DB_HOST = os.getenv("DB_HOST", "simuladornyl-server.mysql.database.azure.com")
 DB_USER = os.getenv("DB_USER", "simulador")
 DB_PASS = os.getenv("DB_PASS", "Nayeli12")
@@ -37,9 +40,6 @@ ACTIVIDADES_PESOS = [
     ("Bañar", 2),
     ("Curar", 1),
 ]
-
-# Aplicación FastAPI
-app = FastAPI(title="Simulador Bebé - Backend (FastAPI)")
 
 # Configurar CORS: ORIGENES_FRONTEND puede ser una lista separada por comas o '*' por defecto
 _origenes_env = os.getenv("ORIGENES_FRONTEND", "*")
