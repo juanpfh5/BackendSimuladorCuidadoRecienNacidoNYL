@@ -9,16 +9,26 @@ import random
 from dotenv import load_dotenv
 from typing import List
 
+import pymysql
+
+
 load_dotenv()
 
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_USER = os.getenv("DB_USER", "root")
-DB_PASS = os.getenv("DB_PASS", "root")
+DB_PASS = os.getenv("DB_PASS", "4815926")
 DB_NAME = os.getenv("DB_NAME", "simulador")
 DB_PORT = int(os.getenv("DB_PORT", "3306"))
 
 TOTAL_ACTIVIDADES_DIARIAS = 3
 
+# Rango horario para generar actividades (en horas, formato 24h)
+# Actividades se generarán entre HORA_INICIO_ACTIVIDADES y HORA_FIN_ACTIVIDADES
+HORA_INICIO_ACTIVIDADES = int(os.getenv("HORA_INICIO_ACTIVIDADES", "13"))   # 9 AM por defecto
+HORA_FIN_ACTIVIDADES = int(os.getenv("HORA_FIN_ACTIVIDADES", "15"))         # 9 PM por defecto
+
+# Separación mínima entre actividades (en minutos)
+MIN_SEPARACION_ACTIVIDADES = int(os.getenv("MIN_SEPARACION_ACTIVIDADES", "10"))
 # Weighted activities
 ACTIVIDADES_PESOS = [
     ("Alimentar", 5),
@@ -38,27 +48,50 @@ if _origenes_env.strip() == "*":
 else:
     ORIGENES_PERMITIDOS = [o.strip() for o in _origenes_env.split(",") if o.strip()]
 
+# Decide whether to allow credentials based on environment and origins.
+_allow_credentials_env = os.getenv("ALLOW_CREDENTIALS", "true").lower()
+_allow_credentials = True if _allow_credentials_env in ("1", "true", "yes") else False
+# If origins is wildcard and credentials are requested, browsers will reject responses.
+if ORIGENES_PERMITIDOS == ["*"] and _allow_credentials:
+    print(
+        "Warning: ALLOW_CREDENTIALS is true but ORIGENES_FRONTEND='*'. Disabling credentials for CORS to avoid browser rejection."
+    )
+    _allow_credentials = False
+
+print(f"CORS configured. allow_origins={ORIGENES_PERMITIDOS}, allow_credentials={_allow_credentials}")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ORIGENES_PERMITIDOS,
-    allow_credentials=True,
+    allow_credentials=_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Simple DB helper (blocking). For production use a connection pool.
 def obtener_conexion_db():
+    
     """Ayudante simple de BD (bloqueante). En producción usar un pool de conexiones."""
-    return pymysql.connect(
-        host=DB_HOST,
-        user=DB_USER,
-        password=DB_PASS,
-        database=DB_NAME,
-        port=DB_PORT,
-        cursorclass=pymysql.cursors.DictCursor,
-        autocommit=True,
-        charset="utf8mb4"
-    )
+    try:
+        return pymysql.connect(
+            host=DB_HOST,
+            user=DB_USER,
+            password=DB_PASS,
+            database=DB_NAME,
+            port=DB_PORT,
+            cursorclass=pymysql.cursors.DictCursor,
+            autocommit=True,
+            charset="utf8mb4",
+        )
+        print("Conexion a la base de datos exitosa.")
+    except Exception as e:
+        # Raise an HTTPException so FastAPI returns a clear 500 response instead of crashing.
+        detail = (
+            "Error connecting to the database.\n"
+            "Possible causes: MySQL not running, wrong credentials, or authentication plugin (caching_sha2_password)\n"
+            f"Original error: {e}"
+        )
+        raise HTTPException(status_code=500, detail=detail)
 
 # --- Utilities ---
 def seleccionar_actividad_ponderada() -> str:
@@ -72,52 +105,64 @@ def seleccionar_actividad_ponderada() -> str:
 
 def obtener_inicio_dia(dt: datetime) -> datetime:
     """
-    Devuelve el inicio de ventana a las 9:00 que contiene la fecha/hora dada.
-    Si dt >= hoy@9:00 -> devuelve hoy@9:00, si no -> devuelve ayer@9:00.
+    Devuelve el inicio de ventana a HORA_INICIO_ACTIVIDADES que contiene la fecha/hora dada.
+    Si dt >= hoy@HORA_INICIO -> devuelve hoy@HORA_INICIO, si no -> devuelve ayer@HORA_INICIO.
     """
-    today9 = datetime(dt.year, dt.month, dt.day, 9, 0, 0)
-    if dt >= today9:
-        return today9
-    return today9 - timedelta(days=1)
+    today_window = datetime(dt.year, dt.month, dt.day, HORA_INICIO_ACTIVIDADES, 0, 0)
+    if dt >= today_window:
+        return today_window
+    return today_window - timedelta(days=1)
 
 def generar_offsets_minutos(n: int, min_sep: int = 15, start_min: int = 0, end_min: int = 24*60-1) -> List[int]:
     """
     Genera n offsets en minutos entre start_min..end_min inclusive,
     intenta distribuirlos uniformemente y aplica separación mínima (min_sep).
+    Garantiza que todos los offsets están dentro del rango [start_min, end_min].
     """
     if n <= 0:
         return []
+    
+    # Verificar si hay espacio suficiente para n actividades con separación mínima
+    min_space_needed = start_min + (n - 1) * min_sep
+    if min_space_needed > end_min:
+        # Si no hay espacio, distribuir lo mejor posible
+        offsets = []
+        for i in range(n):
+            offset = start_min + i * ((end_min - start_min) // n)
+            offsets.append(offset)
+        return offsets
+    
     total_minutes = end_min - start_min + 1
-    # base segments approach for even spread
+    # Distribución uniforme en segmentos
     seg = max(1, total_minutes // n)
     offsets = []
+    
     for i in range(n):
-        seg_start = start_min + i*seg
-        seg_end = min(start_min + (i+1)*seg - 1, end_min)
+        seg_start = start_min + i * seg
+        seg_end = min(start_min + (i + 1) * seg - 1, end_min)
+        
         if seg_start > seg_end:
-            pick = min(start_min + i*min_sep, end_min)
+            pick = min(start_min + i * min_sep, end_min)
         else:
             pick = seg_start + random.randint(0, max(0, seg_end - seg_start))
         offsets.append(pick)
+    
     offsets.sort()
-    # enforce minimum spacing by shifting forward
+    
+    # Forzar separación mínima y mantener dentro del rango
     for i in range(1, len(offsets)):
         if offsets[i] - offsets[i-1] < min_sep:
             offsets[i] = offsets[i-1] + min_sep
-    # if last overflow past end_min, shift back
-    for i in range(len(offsets)-1, -1, -1):
-        if offsets[i] > end_min:
-            offsets[i] = end_min - (len(offsets)-1 - i)*min_sep
-        if i > 0 and offsets[i] - offsets[i-1] < min_sep:
-            offsets[i-1] = offsets[i] - min_sep
-    # final clamp
+            # Si se sobrepasa el límite, ajustar hacia atrás
+            if offsets[i] > end_min:
+                offsets[i] = end_min
+    
+    # Validar que todos los offsets estén dentro del rango
     for i in range(len(offsets)):
         offsets[i] = max(start_min, min(end_min, offsets[i]))
+    
     offsets.sort()
-    # final pass to ensure separation
-    for i in range(1, len(offsets)):
-        if offsets[i] - offsets[i-1] < min_sep:
-            offsets[i] = offsets[i-1] + min_sep
+    
     return offsets
 
 # --- Funciones principales ---
@@ -137,16 +182,22 @@ def actividades_existen_para_dia(curp: str) -> bool:
 
 def generar_actividades_diarias_para_usuario(curp: str) -> int:
     """
-    Genera `TOTAL_ACTIVIDADES_DIARIAS` para el usuario dentro de la ventana 9:00->9:00,
-    con actividades ponderadas aleatorias y tiempos (offsets) aleatorios con separación >=15 min.
+    Genera `TOTAL_ACTIVIDADES_DIARIAS` para el usuario dentro de la ventana HORA_INICIO->HORA_INICIO del día siguiente,
+    con actividades ponderadas aleatorias y tiempos (offsets) aleatorios con separación >= MIN_SEPARACION_ACTIVIDADES.
+    Solo genera actividades dentro del rango HORA_INICIO_ACTIVIDADES a HORA_FIN_ACTIVIDADES.
     Devuelve el número de actividades insertadas.
     """
     ahora = datetime.now()
     inicio_dia = obtener_inicio_dia(ahora)
     fin_ventana = inicio_dia + timedelta(days=1)
 
-    # Colocamos offsets relativos al inicio de ventana (minuto 0..1439)
-    offsets = generar_offsets_minutos(TOTAL_ACTIVIDADES_DIARIAS, min_sep=15, start_min=0, end_min=24*60-1)
+    # Calcular rango de minutos dentro del día (desde medianoche de ese día)
+    # Si inicio_dia es 12:00 PM y fin es 1:00 PM, queremos offsets de 0 a 59 minutos dentro de esa hora
+    start_min = 0  # 0 minutos desde HORA_INICIO_ACTIVIDADES
+    end_min = (HORA_FIN_ACTIVIDADES - HORA_INICIO_ACTIVIDADES) * 60 - 1  # diferencia en minutos
+    
+    # Colocamos offsets relativos al inicio de ventana dentro del rango permitido
+    offsets = generar_offsets_minutos(TOTAL_ACTIVIDADES_DIARIAS, min_sep=MIN_SEPARACION_ACTIVIDADES, start_min=start_min, end_min=end_min)
 
     inserts = []
     for off in offsets:
@@ -222,6 +273,11 @@ class LoginEntrada(BaseModel):
     curp: str
 
 # --- Endpoints ---
+@app.get("/ping")
+def ping():
+    """Simple health/CORS test endpoint."""
+    return {"status": "ok"}
+
 @app.post("/registro")
 def registro(payload: RegistroEntrada):
     sql = "INSERT INTO usuarios (curp, nombre, edad, bebe_vivo) VALUES (%s, %s, %s, %s)"
@@ -336,3 +392,17 @@ def completar_actividad(payload: CompletarEntrada):
     finally:
         conn.close()
 
+# import pymysql
+
+# try:
+#     conn = pymysql.connect(
+#         host="localhost",
+#         user="root",
+#         password="4815926",
+#         database="simulador",
+#         port=3306
+#     )
+#     print("CONEXIÓN OK ✔️")
+#     conn.close()
+# except Exception as e:
+#     print("ERROR ❌:", e)
